@@ -69,6 +69,12 @@ enum Opts {
         )]
         hidden: bool,
 
+        #[structopt(
+            long = "transfer-compress",
+            help = "Compress file data during the transfer"
+        )]
+        compress: bool,
+
         #[structopt(help = "cargo command that will be executed remotely")]
         command: String,
 
@@ -121,6 +127,7 @@ fn main() {
         hidden,
         command,
         options,
+        compress,
     } = Opts::from_args();
 
     let mut metadata_cmd = cargo_metadata::MetadataCommand::new();
@@ -162,10 +169,13 @@ fn main() {
     rsync_to
         .arg("-a".to_owned())
         .arg("--delete")
-        .arg("--compress")
         .arg("--info=progress2")
         .arg("--exclude")
         .arg("target");
+
+    if compress {
+        rsync_to.arg("--compress");
+    }
 
     if !hidden {
         rsync_to.arg("--exclude").arg(".*");
@@ -212,12 +222,30 @@ fn main() {
         });
 
     if let Some(file_name) = copy_back {
+        // ensure `target/debug` etc.
+        Command::new("mkdir").arg("-p")
+            .arg("target/debug")
+            .arg("target/release")
+            .arg("target/tests")
+            .arg("target/doc")
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .stdin(Stdio::inherit())
+            .output()
+            .unwrap_or_else(|e| {
+                error!("Failed to create target dir on local machine (error: {})", e);
+                exit(-6);
+            });
+
         info!("Transferring artifacts back to client.");
         let file_name = file_name.unwrap_or_else(String::new);
-        Command::new("rsync")
+        let mut rsync_to = Command::new("rsync");
+        if compress {
+            rsync_to.arg("--compress");
+        }
+        rsync_to
             .arg("-a")
             .arg("--delete")
-            .arg("--compress")
             .arg("--info=progress2")
             .arg(format!("{}:{}/target/{}", build_server, build_path, file_name))
             .arg(format!("{}/target/{}", project_dir.to_string_lossy(), file_name))
@@ -236,10 +264,13 @@ fn main() {
 
     if !no_copy_lock {
         info!("Transferring Cargo.lock file back to client.");
-        Command::new("rsync")
+        let mut rsync_to = Command::new("rsync");
+        if compress {
+            rsync_to.arg("--compress");
+        }
+        rsync_to
             .arg("-a")
             .arg("--delete")
-            .arg("--compress")
             .arg("--info=progress2")
             .arg(format!("{}:{}/Cargo.lock", build_server, build_path))
             .arg(format!("{}/Cargo.lock", project_dir.to_string_lossy()))
