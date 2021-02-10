@@ -247,8 +247,13 @@ fn main() {
             .arg("-a")
             .arg("--delete")
             .arg("--info=progress2")
-            .arg(format!("{}:{}/target/{}", build_server, build_path, file_name))
-            .arg(format!("{}/target/{}", project_dir.to_string_lossy(), file_name))
+            .arg(format!("{}:{}/target/{}", build_server, build_path, file_name));
+        if file_name.contains('/') {
+            rsync_to.arg(format!("{}/target/{}", project_dir.to_string_lossy(), file_name));
+        } else {
+            rsync_to.arg(format!("{}/target", project_dir.to_string_lossy()));
+        }
+        rsync_to
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .stdin(Stdio::inherit())
