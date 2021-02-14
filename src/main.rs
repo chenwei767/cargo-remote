@@ -63,6 +63,13 @@ enum Opts {
         manifest_path: PathBuf,
 
         #[structopt(
+            long = "base-path",
+            help = "the base dir of build path",
+            default_value = "~",
+        )]
+        base_path: String,
+
+        #[structopt(
             short = "h",
             long = "transfer-hidden",
             help = "Transfer hidden files and directories to the build server"
@@ -128,6 +135,7 @@ fn main() {
         command,
         options,
         compress,
+        base_path,
     } = Opts::from_args();
 
     let mut metadata_cmd = cargo_metadata::MetadataCommand::new();
@@ -161,7 +169,18 @@ fn main() {
     // generate a unique build path by using the hashed project dir as folder on the remote machine
     let mut hasher = DefaultHasher::new();
     project_dir.hash(&mut hasher);
-    let build_path = format!("~/remote-builds/{}/", hasher.finish());
+    let (base_path, build_path) = {
+        // format!("{}/remote-builds/{}/", base_path, hasher.finish())
+        let mut p = PathBuf::new();
+        p.push(base_path);
+        let base_path = p.to_str().unwrap().to_owned();
+        if base_path != "~" {
+            assert!(p.is_absolute(),"The base path must be absolute path.");
+        }
+        p.push("remote-builds");
+        p.push(hasher.finish().to_string());
+        (base_path, p.to_str().unwrap().to_owned())
+    };
 
     info!("Transferring sources to build server.");
     // transfer project to build server
@@ -183,7 +202,7 @@ fn main() {
 
     rsync_to
         .arg("--rsync-path")
-        .arg("mkdir -p remote-builds && rsync")
+        .arg(format!("mkdir -p {}/remote-builds && rsync", base_path))
         .arg(format!("{}/", project_dir.to_string_lossy()))
         .arg(format!("{}:{}", build_server, build_path))
         .stdout(Stdio::inherit())
