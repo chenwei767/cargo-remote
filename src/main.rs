@@ -1,13 +1,11 @@
-use std::path::{Path, PathBuf};
-use std::process::{exit, Command, Stdio};
+use simple_logger::SimpleLogger;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
+use std::process::{exit, Command, Stdio};
 use structopt::StructOpt;
-use toml::Value;
 
-use log::{error, info, warn};
-
-const PROGRESS_FLAG: &str = "--info=progress2";
+use log::{error, info};
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "cargo-remote", bin_name = "cargo")]
@@ -15,7 +13,7 @@ enum Opts {
     #[structopt(name = "remote")]
     Remote {
         #[structopt(short = "r", long = "remote", help = "Remote ssh build server")]
-        remote: Option<String>,
+        build_server: String,
 
         #[structopt(
             short = "b",
@@ -44,9 +42,9 @@ enum Opts {
         #[structopt(
             short = "c",
             long = "copy-back",
-            help = "Transfer the target folder or specific file from that folder back to the local machine"
+            help = "Transfer specific files or folders from that folder back to the local machine"
         )]
-        copy_back: Option<Option<String>>,
+        copy_back: Option<Vec<PathBuf>>,
 
         #[structopt(
             long = "no-copy-lock",
@@ -65,12 +63,11 @@ enum Opts {
         #[structopt(
             long = "base-path",
             help = "the base dir of build path",
-            default_value = "~",
+            default_value = "~"
         )]
-        base_path: String,
+        base_path: PathBuf,
 
         #[structopt(
-            short = "h",
             long = "transfer-hidden",
             help = "Transfer hidden files and directories to the build server"
         )]
@@ -93,38 +90,11 @@ enum Opts {
     },
 }
 
-/// Tries to parse the file [`config_path`]. Logs warnings and returns [`None`] if errors occur
-/// during reading or parsing, [`Some(Value)`] otherwise.
-fn config_from_file(config_path: &Path) -> Option<Value> {
-    let config_file = std::fs::read_to_string(config_path)
-        .map_err(|e| {
-            warn!(
-                "Can't parse config file '{}' (error: {})",
-                config_path.to_string_lossy(),
-                e
-            );
-        })
-        .ok()?;
-
-    let value = config_file
-        .parse::<Value>()
-        .map_err(|e| {
-            warn!(
-                "Can't parse config file '{}' (error: {})",
-                config_path.to_string_lossy(),
-                e
-            );
-        })
-        .ok()?;
-
-    Some(value)
-}
-
 fn main() {
-    simple_logger::init().unwrap();
+    SimpleLogger::new().init().unwrap();
 
     let Opts::Remote {
-        remote,
+        build_server,
         build_env,
         rustup_default,
         env,
@@ -138,48 +108,28 @@ fn main() {
         base_path,
     } = Opts::from_args();
 
-    let mut metadata_cmd = cargo_metadata::MetadataCommand::new();
-    metadata_cmd.manifest_path(manifest_path).no_deps();
-
-    let project_metadata = metadata_cmd.exec().unwrap();
-    let project_dir = project_metadata.workspace_root;
+    let project_dir = {
+        let mut metadata_cmd = cargo_metadata::MetadataCommand::new();
+        metadata_cmd.manifest_path(manifest_path).no_deps();
+        let project_metadata = metadata_cmd.exec().unwrap();
+        project_metadata.workspace_root
+    };
     info!("Project dir: {:?}", project_dir);
 
-    let configs = vec![
-        config_from_file(&project_dir.join(".cargo-remote.toml")),
-        xdg::BaseDirectories::with_prefix("cargo-remote")
-            .ok()
-            .and_then(|base| base.find_config_file("cargo-remote.toml"))
-            .and_then(|p: PathBuf| config_from_file(&p)),
-    ];
+    let build_path = {
+        // generate a unique build path by using the hashed project dir as folder on the remote machine
+        let mut hasher = DefaultHasher::new();
+        project_dir.hash(&mut hasher);
 
-    // TODO: move Opts::Remote fields into own type and implement complete_from_config(&mut self, config: &Value)
-    let build_server = remote
-        .or_else(|| {
-            configs
-                .into_iter()
-                .flat_map(|config| config.and_then(|c| c["remote"].as_str().map(String::from)))
-                .next()
-        })
-        .unwrap_or_else(|| {
-            error!("No remote build server was defined (use config file or --remote flag)");
-            exit(-3);
-        });
-
-    // generate a unique build path by using the hashed project dir as folder on the remote machine
-    let mut hasher = DefaultHasher::new();
-    project_dir.hash(&mut hasher);
-    let (base_path, build_path) = {
         // format!("{}/remote-builds/{}/", base_path, hasher.finish())
         let mut p = PathBuf::new();
         p.push(base_path);
-        let base_path = p.to_str().unwrap().to_owned();
-        if base_path != "~" {
-            assert!(p.is_absolute(),"The base path must be absolute path.");
+        if p.to_string_lossy() != "~" {
+            assert!(p.is_absolute(), "The base path must be absolute path.");
         }
         p.push("remote-builds");
         p.push(hasher.finish().to_string());
-        (base_path, p.to_str().unwrap().to_owned())
+        p
     };
 
     info!("Transferring sources to build server.");
@@ -202,9 +152,12 @@ fn main() {
 
     rsync_to
         .arg("--rsync-path")
-        .arg(format!("mkdir -p {}/remote-builds && rsync", base_path))
+        .arg(format!(
+            "mkdir -p {} && rsync",
+            build_path.to_string_lossy()
+        ))
         .arg(format!("{}/", project_dir.to_string_lossy()))
-        .arg(format!("{}:{}", build_server, build_path))
+        .arg(format!("{}:{}", build_server, build_path.to_string_lossy()))
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .stdin(Stdio::inherit())
@@ -215,18 +168,18 @@ fn main() {
         });
     info!("Build ENV: {:?}", build_env);
     info!("Environment profile: {:?}", env);
-    info!("Build path: {:?}", build_path);
+    info!("Build path: {:?}", build_path.to_string_lossy());
     let build_command = format!(
         "source {}; rustup default {}; cd {}; {} cargo {} {}",
         env,
         rustup_default,
-        build_path,
+        build_path.to_string_lossy(),
         build_env,
         command,
         options.join(" ")
     );
 
-    info!("Starting build process.");
+    info!("Starting build process. \n{}", build_command);
     let output = Command::new("ssh")
         .arg("-t")
         .arg(&build_server)
@@ -240,50 +193,66 @@ fn main() {
             exit(-5);
         });
 
-    if let Some(file_name) = copy_back {
-        // ensure `target/debug` etc.
-        Command::new("mkdir").arg("-p")
-            .arg("target/debug")
-            .arg("target/release")
-            .arg("target/tests")
-            .arg("target/doc")
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .stdin(Stdio::inherit())
-            .output()
-            .unwrap_or_else(|e| {
-                error!("Failed to create target dir on local machine (error: {})", e);
-                exit(-6);
-            });
+    if let Some(file_names) = copy_back {
+		assert!(file_names.len() > 0, "need at least a file or dir");
+        for file_name in file_names {
+			assert!(file_name.to_string_lossy().len() > 0, "file or dir that trans back cannot be empty!");
+			let mut dir = project_dir.clone();
+            dir.push(file_name.clone());
+			let dir = dir.parent().unwrap().as_os_str();
 
-        info!("Transferring artifacts back to client.");
-        let file_name = file_name.unwrap_or_else(String::new);
-        let mut rsync_to = Command::new("rsync");
-        if compress {
-            rsync_to.arg("--compress");
+            // ensure dirs.
+            Command::new("mkdir")
+                .arg("-p")
+                .arg(dir)
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .stdin(Stdio::inherit())
+                .output()
+                .unwrap_or_else(|e| {
+                    error!(
+                        "Failed to create target dir on local machine (error: {})",
+                        e
+                    );
+                    exit(-6);
+                });
+
+            info!(
+                "Transferring {} back to client.",
+                file_name.to_string_lossy()
+            );
+            let mut rsync_to = Command::new("rsync");
+            if compress {
+                rsync_to.arg("--compress");
+            }
+            rsync_to
+                .arg("-a")
+                .arg("-r")
+                .arg("--delete")
+                .arg("--info=progress2")
+                .arg(format!(
+                    "{}:{}/{}",
+                    build_server,
+                    build_path.to_string_lossy(),
+                    file_name.to_string_lossy()
+                ))
+                .arg(format!(
+                    "{}/{}",
+                    project_dir.to_string_lossy(),
+                    file_name.to_string_lossy()
+                ))
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .stdin(Stdio::inherit())
+                .output()
+                .unwrap_or_else(|e| {
+                    error!(
+                        "Failed to transfer target back to local machine (error: {})",
+                        e
+                    );
+                    exit(-6);
+                });
         }
-        rsync_to
-            .arg("-a")
-            .arg("--delete")
-            .arg("--info=progress2")
-            .arg(format!("{}:{}/target/{}", build_server, build_path, file_name));
-        if file_name.contains('/') {
-            rsync_to.arg(format!("{}/target/{}", project_dir.to_string_lossy(), file_name));
-        } else {
-            rsync_to.arg(format!("{}/target", project_dir.to_string_lossy()));
-        }
-        rsync_to
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .stdin(Stdio::inherit())
-            .output()
-            .unwrap_or_else(|e| {
-                error!(
-                    "Failed to transfer target back to local machine (error: {})",
-                    e
-                );
-                exit(-6);
-            });
     }
 
     if !no_copy_lock {
@@ -296,7 +265,11 @@ fn main() {
             .arg("-a")
             .arg("--delete")
             .arg("--info=progress2")
-            .arg(format!("{}:{}/Cargo.lock", build_server, build_path))
+            .arg(format!(
+                "{}:{}/Cargo.lock",
+                build_server,
+                build_path.to_string_lossy()
+            ))
             .arg(format!("{}/Cargo.lock", project_dir.to_string_lossy()))
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())

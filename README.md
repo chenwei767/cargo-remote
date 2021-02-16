@@ -27,42 +27,47 @@ and `rsync` need to be installed.
 If you want to pass remote flags you have to end the options/flags section using
 `--`. E.g. to build in release mode and copy back the result use:
 ```bash
-cargo remote -c -- build --release
-```
-
-### Configuration
-You can place a config file called `.cargo-remote.toml` in the same directory as your
-`Cargo.toml` or at `~/.config/cargo-remote/cargo-remote.toml`. There you can define a
-default remote build host and user. It can be overridden by the `-r` flag.
-
-Example config file:
-```toml
-remote = "builds@myserver"
+cargo remote \ 
+    --base-path /data \
+    -c target/release/yourbinname1 \
+    -c target/release/yourbinname2 \
+    -c target/release/yourdir/ \
+    -b "RUST_BACKTRACE=1 WASM_BUILD_TYPE=release" \
+    -e "/home/yourname/.profile" \
+    -r yourname@1.1.1.1 \
+    build -- \
+    --release
 ```
 
 ### Flags and options
 ```
+$ cargo remote -h
+cargo-remote 0.2.0
+
 USAGE:
-    cargo remote [FLAGS] [OPTIONS] <command> [remote options]...
+    cargo remote [FLAGS] [OPTIONS] <command> --remote <build-server> [--] [remote options]...
 
 FLAGS:
-    -c, --copy-back          Transfer the target folder back to the local machine
-        --help               Prints help information
-    -h, --transfer-hidden    Transfer hidden files and directories to the build server
-    -V, --version            Prints version information
+        --transfer-compress    Compress file data during the transfer
+    -h, --help                 Prints help information
+        --transfer-hidden      Transfer hidden files and directories to the build server
+        --no-copy-lock         don't transfer the Cargo.lock file back to the local machine
+    -V, --version              Prints version information
 
 OPTIONS:
-    -b, --build-env <build_env>              Set remote environment variables. RUST_BACKTRACE, CC, LIB, etc.  [default:
+        --base-path <base-path>              the base dir of build path [default: ~]
+    -b, --build-env <build-env>              Set remote environment variables. RUST_BACKTRACE, CC, LIB, etc.  [default:
                                              RUST_BACKTRACE=1]
+    -r, --remote <build-server>              Remote ssh build server
+    -c, --copy-back <copy-back>...           Transfer specific files or folders from that folder back to the local
+                                             machine
     -e, --env <env>                          Environment profile. default_value = /etc/profile [default: /etc/profile]
-        --manifest-path <manifest_path>      Path to the manifest to execute [default: Cargo.toml]
-    -r, --remote <remote>                    Remote ssh build server
-    -d, --rustup-default <rustup_default>    Rustup default (stable|beta|nightly) [default: stable]
+        --manifest-path <manifest-path>      Path to the manifest to execute [default: Cargo.toml]
+    -d, --rustup-default <rustup-default>    Rustup default (stable|beta|nightly) [default: stable]
 
 ARGS:
     <command>              cargo command that will be executed remotely
     <remote options>...    cargo options and flags that will be applied remotely
-
 ```
 
 
