@@ -140,7 +140,9 @@ fn main() {
         .arg("--delete")
         .arg("--info=progress2")
         .arg("--exclude")
-        .arg("target");
+        .arg("target")
+        .arg("--exclude")
+        .arg("node_modules");
 
     if compress {
         rsync_to.arg("--compress");
