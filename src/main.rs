@@ -68,6 +68,12 @@ enum Opts {
         base_path: PathBuf,
 
         #[structopt(
+            long = "build-path",
+            help = "Use this build_path instead of generating build_path from a hash."
+        )]
+        build_path: Option<PathBuf>,
+
+        #[structopt(
             long = "transfer-hidden",
             help = "Transfer hidden files and directories to the build server"
         )]
@@ -102,6 +108,7 @@ fn main() {
         no_copy_lock,
         manifest_path,
         hidden,
+        build_path,
         command,
         options,
         compress,
@@ -116,7 +123,7 @@ fn main() {
     };
     info!("Project dir: {:?}", project_dir);
 
-    let build_path = {
+    let build_path = build_path.unwrap_or_else(|| {
         // generate a unique build path by using the hashed project dir as folder on the remote machine
         let mut hasher = DefaultHasher::new();
         project_dir.hash(&mut hasher);
@@ -130,7 +137,7 @@ fn main() {
         p.push("remote-builds");
         p.push(hasher.finish().to_string());
         p
-    };
+    });
 
     info!("Transferring sources to build server.");
     // transfer project to build server
